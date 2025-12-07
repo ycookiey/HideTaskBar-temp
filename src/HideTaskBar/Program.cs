@@ -14,16 +14,35 @@ static class Program
         using var keyboardHook = new KeyboardHook();
         using var startMenuMonitor = new StartMenuMonitor();
 
+        // 有効/無効切り替え時の処理（FR-5）
+        trayIcon.EnabledChanged += (enabled) =>
+        {
+            if (enabled)
+            {
+                taskBarController.Hide();
+            }
+            else
+            {
+                taskBarController.Show();
+            }
+        };
+
         // Winキー押下時にタスクバーを表示
         keyboardHook.WinKeyPressed += () =>
         {
-            taskBarController.Show();
+            if (trayIcon.IsEnabled)
+            {
+                taskBarController.Show();
+            }
         };
 
         // スタートメニューが閉じたらタスクバーを非表示
         startMenuMonitor.StartMenuClosed += () =>
         {
-            taskBarController.Hide();
+            if (trayIcon.IsEnabled)
+            {
+                taskBarController.Hide();
+            }
         };
 
         // 初期状態でタスクバーを非表示
