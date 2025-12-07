@@ -82,6 +82,7 @@ public sealed class KeyboardHook : IDisposable
             if ((wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) &&
                 (vkCode == VK_LWIN || vkCode == VK_RWIN))
             {
+                DebugLogger.LogWinKeyPressed();
                 WinKeyPressed?.Invoke();
             }
         }

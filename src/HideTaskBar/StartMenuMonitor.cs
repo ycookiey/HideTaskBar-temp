@@ -3,76 +3,87 @@ using System.Runtime.InteropServices;
 namespace HideTaskBar;
 
 /// <summary>
-/// スタートメニューの状態を監視し、閉じた時にイベントを発火する
+/// アクティブウィンドウの変更を監視し、スタートメニュー以外になったらイベント発火
 /// </summary>
 public sealed class StartMenuMonitor : IDisposable
 {
-    private const int SW_HIDE = 0;
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr FindWindowEx(IntPtr hwndParent, IntPtr hwndChildAfter, string? lpszClass, string? lpszWindow);
+    private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
 
     [DllImport("user32.dll")]
-    private static extern bool IsWindowVisible(IntPtr hWnd);
+    private static extern IntPtr SetWinEventHook(
+        uint eventMin, uint eventMax,
+        IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc,
+        uint idProcess, uint idThread, uint dwFlags);
 
-    private readonly System.Windows.Forms.Timer _pollTimer;
-    private bool _wasVisible = false;
+    [DllImport("user32.dll")]
+    private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
 
-    /// <summary>
-    /// スタートメニューが閉じられた時に発火するイベント
-    /// </summary>
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+    private delegate void WinEventDelegate(
+        IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+
+    private readonly WinEventDelegate _winEventProc;
+    private readonly IntPtr _hookHandle;
+    private bool _waitingForClose = false;
+
     public event Action? StartMenuClosed;
 
     public StartMenuMonitor()
     {
-        _pollTimer = new System.Windows.Forms.Timer
-        {
-            Interval = 100 // 100ms間隔でポーリング
-        };
-        _pollTimer.Tick += OnTimerTick;
-        _pollTimer.Start();
-    }
-
-    private void OnTimerTick(object? sender, EventArgs e)
-    {
-        bool isVisible = IsStartMenuVisible();
-
-        if (_wasVisible && !isVisible)
-        {
-            // スタートメニューが閉じられた
-            StartMenuClosed?.Invoke();
-        }
-
-        _wasVisible = isVisible;
+        _winEventProc = WinEventCallback;
+        _hookHandle = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+            IntPtr.Zero, _winEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
     }
 
     /// <summary>
-    /// スタートメニューが表示されているかどうかを直接確認
+    /// Winキーが押されたら呼ぶ。スタートメニューが閉じるのを待機開始
     /// </summary>
-    private static bool IsStartMenuVisible()
+    public void StartWaitingForClose()
     {
-        // Windows 11 スタートメニューのウィンドウを検索
-        // クラス名: Windows.UI.Core.CoreWindow, ウィンドウ名: スタート または Start
-        IntPtr hwnd = FindStartMenuWindow();
-        if (hwnd == IntPtr.Zero) return false;
-
-        return IsWindowVisible(hwnd);
+        _waitingForClose = true;
+        DebugLogger.Log("Waiting for active window change...");
     }
 
-    private static IntPtr FindStartMenuWindow()
+    private void WinEventCallback(
+        IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
     {
-        // 日本語環境
-        IntPtr hwnd = FindWindowEx(IntPtr.Zero, IntPtr.Zero, "Windows.UI.Core.CoreWindow", "スタート");
-        if (hwnd != IntPtr.Zero) return hwnd;
+        if (!_waitingForClose) return;
 
-        // 英語環境
-        hwnd = FindWindowEx(IntPtr.Zero, IntPtr.Zero, "Windows.UI.Core.CoreWindow", "Start");
-        return hwnd;
+        var foreground = GetForegroundWindow();
+        var classNameBuilder = new System.Text.StringBuilder(256);
+        GetClassName(foreground, classNameBuilder, classNameBuilder.Capacity);
+        var className = classNameBuilder.ToString();
+
+        DebugLogger.Log($"Active window changed: {className}");
+
+        // スタートメニュー関連でなければ、閉じたとみなす
+        if (!IsStartMenuRelated(className))
+        {
+            _waitingForClose = false;
+            DebugLogger.LogEvent("StartMenuClosed (active window changed)");
+            StartMenuClosed?.Invoke();
+        }
+    }
+
+    private static bool IsStartMenuRelated(string className)
+    {
+        return className == "Windows.UI.Core.CoreWindow" ||
+               className == "Shell_TrayWnd" ||
+               className == "Shell_SecondaryTrayWnd" ||
+               className == "XamlExplorerHostIslandWindow";
     }
 
     public void Dispose()
     {
-        _pollTimer.Stop();
-        _pollTimer.Dispose();
+        UnhookWinEvent(_hookHandle);
     }
 }

@@ -33,6 +33,7 @@ static class Program
             if (trayIcon.IsEnabled)
             {
                 taskBarController.Show();
+                startMenuMonitor.StartWaitingForClose(); // 閉じるのを待機開始
             }
         };
 
