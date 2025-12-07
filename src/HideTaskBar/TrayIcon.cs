@@ -51,7 +51,7 @@ public sealed class TrayIcon : IDisposable
 
         _notifyIcon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = LoadAppIcon(),
             Text = "HideTaskBar",
             ContextMenuStrip = _contextMenu,
             Visible = true
@@ -86,5 +86,17 @@ public sealed class TrayIcon : IDisposable
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _contextMenu.Dispose();
+    }
+
+    private static Icon LoadAppIcon()
+    {
+        var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+        var resourceName = "HideTaskBar.app.ico";
+        using var stream = assembly.GetManifestResourceStream(resourceName);
+        if (stream != null)
+        {
+            return new Icon(stream);
+        }
+        return SystemIcons.Application;
     }
 }
