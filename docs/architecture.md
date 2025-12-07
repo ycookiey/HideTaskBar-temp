@@ -6,8 +6,8 @@
 flowchart TB
     subgraph User["👤 ユーザー操作"]
         WinKey["⌨️ Winキー押下"]
-        Click["🖱️ スタートメニュー以外の場所をクリック"]
-        TrayMenu["📋 トレイメニュー→終了"]
+        Click["🖱️ スタートメニュー以外をクリック"]
+        TrayMenu["📋 トレイメニュー"]
     end
 
     subgraph App["🔧 HideTaskBar.exe"]
@@ -19,19 +19,17 @@ flowchart TB
 
     subgraph Windows["🪟 Windows"]
         TaskBar["タスクバー"]
-        StartMenu["スタートメニュー"]
     end
 
     WinKey --> KeyboardHook
     KeyboardHook -->|"Show()"| TaskBarController
-    TaskBarController -->|"ShowWindow API"| TaskBar
+    TaskBarController -->|"ShowWindow + SetWindowPos"| TaskBar
 
-    StartMenu -->|"フォーカス変化"| StartMenuMonitor
-    Click --> StartMenu
+    Click --> StartMenuMonitor
     StartMenuMonitor -->|"Hide()"| TaskBarController
 
     TrayMenu --> TrayIcon
-    TrayIcon -->|"Application.Exit()"| App
+    TrayIcon -->|"終了"| App
 ```
 
 ---
@@ -47,24 +45,42 @@ sequenceDiagram
     participant W as Windows
 
     Note over T,W: 起動時
-    T->>W: Hide() - タスクバー非表示
+    T->>W: Hide() - ShowWindow(SW_HIDE) + SetWindowPos(Y=-10000)
+    Note over T: 50ms間隔で強制維持
 
     Note over U,W: Winキー押下
     U->>K: Winキー押下
-    K->>T: WinKeyPressed イベント
-    T->>W: Show() - タスクバー表示
-    W->>U: スタートメニュー表示
+    K->>T: WinKeyPressed
+    T->>W: Show() - SetWindowPos(元の位置) + ShowWindow(SW_SHOW)
+    K->>S: StartWaitingForClose()
 
     Note over U,W: スタートメニュー終了
-    U->>W: スタートメニュー以外の場所をクリック
-    W->>S: フォアグラウンド変更
-    S->>T: StartMenuClosed イベント
-    T->>W: Hide() - タスクバー非表示
-
-    Note over U,W: アプリ終了
-    U->>T: トレイ→終了
-    T->>W: Show() - タスクバー復元
+    U->>W: 他の場所をクリック
+    W->>S: EVENT_SYSTEM_FOREGROUND
+    S->>T: StartMenuClosed
+    T->>W: Hide()
 ```
+
+---
+
+## タスクバー非表示の仕組み
+
+```mermaid
+flowchart LR
+    subgraph Hide["Hide() 処理"]
+        A[ShowWindow SW_HIDE] --> B[SetWindowPos Y=-10000]
+        B --> C[50ms後に再実行]
+        C --> A
+    end
+    
+    subgraph Show["Show() 処理"]
+        D[SetWindowPos 元の位置] --> E[ShowWindow SW_SHOW]
+    end
+```
+
+**2つのAPIを併用する理由:**
+- `ShowWindow(SW_HIDE)`: ウィンドウを非表示にし、マウスホバー判定を無効化
+- `SetWindowPos(Y=-10000)`: 念のため画面外に移動してバックアップ
 
 ---
 
@@ -72,77 +88,57 @@ sequenceDiagram
 
 ```mermaid
 classDiagram
-    class Program {
-        +Main()
-    }
-
     class TaskBarController {
-        -List~IntPtr~ _taskBarHandles
+        -bool _shouldBeHidden
+        -Timer _enforceTimer
         +Hide()
         +Show()
-        +Dispose()
+        -EnforceHide()
     }
 
     class KeyboardHook {
-        -IntPtr _hookId
+        -GCHandle _gcHandle
         +event WinKeyPressed
-        +Dispose()
     }
 
     class StartMenuMonitor {
-        -IntPtr _hookHandle
-        -bool _startMenuWasOpen
+        -bool _waitingForClose
+        +StartWaitingForClose()
         +event StartMenuClosed
-        +Dispose()
     }
 
     class TrayIcon {
-        -NotifyIcon _notifyIcon
-        -ContextMenuStrip _contextMenu
-        +Dispose()
+        +event EnabledChanged
+        +bool IsEnabled
     }
 
-    Program --> TaskBarController
-    Program --> KeyboardHook
-    Program --> StartMenuMonitor
-    Program --> TrayIcon
-
-    KeyboardHook ..> TaskBarController : WinKeyPressed→Show()
-    StartMenuMonitor ..> TaskBarController : StartMenuClosed→Hide()
-    TrayIcon ..> Program : 終了→Application.Exit()
+    KeyboardHook ..> TaskBarController : Show()
+    KeyboardHook ..> StartMenuMonitor : StartWaitingForClose()
+    StartMenuMonitor ..> TaskBarController : Hide()
 ```
 
 ---
 
 ## Win32 API 使用一覧
 
-```mermaid
-mindmap
-  root((Win32 API))
-    TaskBarController
-      FindWindow
-      FindWindowEx
-      ShowWindow
-    KeyboardHook
-      SetWindowsHookEx
-      UnhookWindowsHookEx
-      CallNextHookEx
-      GetModuleHandle
-    StartMenuMonitor
-      SetWinEventHook
-      UnhookWinEvent
-      GetForegroundWindow
-      GetClassName
-      GetWindowText
-```
+| コンポーネント | API | 用途 |
+|----------------|-----|------|
+| TaskBarController | `FindWindow` | タスクバーハンドル取得 |
+| TaskBarController | `ShowWindow` | 表示/非表示切り替え |
+| TaskBarController | `SetWindowPos` | 位置移動 |
+| KeyboardHook | `SetWindowsHookEx` | キーボードフック |
+| StartMenuMonitor | `SetWinEventHook` | フォアグラウンド変更監視 |
 
 ---
 
 ## 機能要件マッピング
 
-| 要件 | コンポーネント | 実装 |
-|------|----------------|------|
-| FR-1 | TaskBarController | `ShowWindow(hwnd, SW_HIDE)` |
-| FR-2 | KeyboardHook | `WH_KEYBOARD_LL` フック |
-| FR-3 | StartMenuMonitor | `EVENT_SYSTEM_FOREGROUND` 監視 |
-| FR-4 | TrayIcon | `NotifyIcon` + コンテキストメニュー |
+| 要件 | 実装 |
+|------|------|
+| FR-1 | `ShowWindow(SW_HIDE)` + `SetWindowPos(Y=-10000)` 50ms間隔強制 |
+| FR-2 | `WH_KEYBOARD_LL` フック |
+| FR-3 | `EVENT_SYSTEM_FOREGROUND` 監視 |
+| FR-4 | `NotifyIcon` + コンテキストメニュー |
+| FR-5 | トレイメニュー「有効/無効」 |
+| FR-6 | レジストリ `HKCU\...\Run` |
+| FR-7 | `Shell_SecondaryTrayWnd` 対応 |
