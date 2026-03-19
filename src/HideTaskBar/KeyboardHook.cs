@@ -35,9 +35,10 @@ public sealed class KeyboardHook : IDisposable
     private readonly GCHandle _gcHandle; // GCによるデリゲート回収を防ぐ
     private IntPtr _hookId;
     private readonly System.Windows.Forms.Timer _rehookTimer;
+    private bool _winKeyDown = false; // Winキー押下中フラグ
 
     /// <summary>
-    /// Winキーが押下された時に発火するイベント
+    /// Winキーが単独タップされた時に発火するイベント（コンボは除外）
     /// </summary>
     public event Action? WinKeyPressed;
 
@@ -77,13 +78,29 @@ public sealed class KeyboardHook : IDisposable
         if (nCode >= 0)
         {
             int vkCode = Marshal.ReadInt32(lParam);
-            
-            // Winキーの押下を検知（KEYDOWNのみ）
-            if ((wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) &&
-                (vkCode == VK_LWIN || vkCode == VK_RWIN))
+            bool isWinKey = vkCode == VK_LWIN || vkCode == VK_RWIN;
+
+            if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)
             {
-                DebugLogger.LogWinKeyPressed();
-                WinKeyPressed?.Invoke();
+                if (isWinKey)
+                {
+                    _winKeyDown = true;
+                }
+                else if (_winKeyDown)
+                {
+                    // Win押下中に他キーが押された → コンボなので無効化
+                    _winKeyDown = false;
+                }
+            }
+            else if ((wParam == WM_KEYUP || wParam == WM_SYSKEYUP) && isWinKey)
+            {
+                if (_winKeyDown)
+                {
+                    // 他キーが押されずにリリース → 単独タップ
+                    DebugLogger.LogWinKeyPressed();
+                    WinKeyPressed?.Invoke();
+                }
+                _winKeyDown = false;
             }
         }
         return CallNextHookEx(_hookId, nCode, wParam, lParam);
